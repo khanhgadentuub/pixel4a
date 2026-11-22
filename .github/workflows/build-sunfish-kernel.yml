@@ -52,6 +52,8 @@ jobs:
       - name: Build
         working-directory: kernel
         run: |
+          # This tree looks for the device-tree compiler at tools/dtc; point it at the one we build
+          ln -sf "$PWD/out/scripts/dtc/dtc" tools/dtc
           MAKEARGS=(O=out ARCH=arm64 CC=clang-14 LD=ld.lld-14
             CLANG_TRIPLE=aarch64-linux-gnu-
             CROSS_COMPILE=aarch64-linux-gnu-
@@ -62,6 +64,9 @@ jobs:
           if ! make -j"$(nproc)" "${MAKEARGS[@]}" > build.log 2>&1; then
             echo "=============== LINES WITH ERRORS ==============="
             grep -n -E "error:|undefined|\*\*\*|No rule|not found" build.log | head -40
+            echo "=============== WHERE tools/dtc IS SET ==============="
+            grep -rn "tools/dtc" Makefile scripts/Makefile.lib arch/arm64/Makefile arch/arm64/boot/dts/Makefile 2>/dev/null | head -20
+            ls -l tools/dtc out/scripts/dtc/dtc || true
             echo "=============== RERUN, ONE THREAD ==============="
             make -j1 "${MAKEARGS[@]}" 2>&1 | tail -n 60
             exit 1
