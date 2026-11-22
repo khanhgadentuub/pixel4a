@@ -56,6 +56,8 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu-
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            DTC_EXT="$PWD/out/scripts/dtc/dtc"
+            DTC="$PWD/out/scripts/dtc/dtc"
             KCFLAGS=-Wno-error)
           if ! make -j"$(nproc)" "${MAKEARGS[@]}" > build.log 2>&1; then
             echo "=============== LINES WITH ERRORS ==============="
