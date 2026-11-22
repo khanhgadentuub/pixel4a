@@ -1,0 +1,66 @@
+# Put this file in a NEW GitHub repo at .github/workflows/build-sunfish-kernel.yml
+# Then: Actions tab -> "Build sunfish kernel" -> Run workflow.
+# UNTESTED. Toolchain URLs and defconfig name are from memory; fix whatever fails.
+name: Build sunfish kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Kernel repo"
+        default: "https://github.com/lopro104/android_kernel_google_msm-4.14"
+      branch:
+        description: "Branch"
+        default: "cnb"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev python3 lz4 cpio git curl xz-utils
+
+      - name: Get kernel source
+        run: |
+          git clone --depth=1 -b "${{ inputs.branch }}" "${{ inputs.repo }}" kernel
+          ls kernel/arch/arm64/configs | grep -i -E "sunfish|floral" || true
+
+      - name: Get Google toolchains (names from memory, may need adjusting)
+        run: |
+          mkdir -p tc/clang tc/gcc64 tc/gcc32
+          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r416183b.tar.gz" | tar xz -C tc/clang
+          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android11-release.tar.gz" | tar xz -C tc/gcc64
+          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android11-release.tar.gz" | tar xz -C tc/gcc32
+
+      - name: Configure (adds SYSVIPC and BINFMT_MISC)
+        working-directory: kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/tc/clang/bin:$GITHUB_WORKSPACE/tc/gcc64/bin:$GITHUB_WORKSPACE/tc/gcc32/bin:$PATH"
+          DEFCONFIG=$(ls arch/arm64/configs | grep -E '^sunfish.*defconfig$' | head -1)
+          echo "Using $DEFCONFIG"
+          make O=out ARCH=arm64 "$DEFCONFIG"
+          scripts/config --file out/.config -e SYSVIPC -e SYSVIPC_SYSCTL -e BINFMT_MISC
+          make O=out ARCH=arm64 olddefconfig
+          grep -E "CONFIG_SYSVIPC=|CONFIG_BINFMT_MISC=" out/.config
+
+      - name: Build
+        working-directory: kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/tc/clang/bin:$GITHUB_WORKSPACE/tc/gcc64/bin:$GITHUB_WORKSPACE/tc/gcc32/bin:$PATH"
+          make -j"$(nproc)" O=out ARCH=arm64 CC=clang LD=ld.lld \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- 2>&1 | tail -n 200
+          ls -lh out/arch/arm64/boot/
+
+      - name: Upload kernel image and config
+        uses: actions/upload-artifact@v4
+        with:
+          name: sunfish-kernel
+          path: |
+            kernel/out/arch/arm64/boot/Image*
+            kernel/out/arch/arm64/boot/dts/**/*.dtb
+            kernel/out/.config
