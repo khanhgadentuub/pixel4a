@@ -2,7 +2,7 @@
 # v2: no Google toolchain download; uses Ubuntu's clang-14 + cross gcc.
 # UNTESTED. A 4.14 kernel on a newer clang may need more fixes.
 name: Build sunfish kernel
-
+ 
 on:
   workflow_dispatch:
     inputs:
@@ -12,7 +12,7 @@ on:
       branch:
         description: "Branch"
         default: "cnb"
-
+ 
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -24,13 +24,15 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev python3 lz4 cpio git curl xz-utils \
             clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
           clang-14 --version
-
+          # Let clang find lld as plain "ld.lld" (backup for the 32-bit link step)
+          sudo ln -sf /usr/bin/ld.lld-14 /usr/local/bin/ld.lld
+ 
       - name: Get kernel source
         run: |
           git clone --depth=1 -b "${{ inputs.branch }}" "${{ inputs.repo }}" kernel
           echo "--- configs found:"
           ls kernel/arch/arm64/configs | grep -i -E "sunfish|floral" || true
-
+ 
       - name: Configure (adds SYSVIPC and BINFMT_MISC)
         working-directory: kernel
         run: |
@@ -40,10 +42,13 @@ jobs:
           make O=out ARCH=arm64 CC=clang-14 "$DEFCONFIG"
           # Newer clang cannot do Google's CFI/LTO setup, so turn those off
           scripts/config --file out/.config -d CFI_CLANG -d LTO_CLANG -d SHADOW_CALL_STACK || true
+          # 32-bit vDSO fails to link here (x86 ld used for ARM); not needed for testing
+          scripts/config --file out/.config -d COMPAT_VDSO || true
           scripts/config --file out/.config -e SYSVIPC -e SYSVIPC_SYSCTL -e BINFMT_MISC
           make O=out ARCH=arm64 CC=clang-14 olddefconfig
           grep -E "CONFIG_SYSVIPC=|CONFIG_BINFMT_MISC=" out/.config
-
+          grep -E "COMPAT_VDSO" out/.config || echo "COMPAT_VDSO not present"
+ 
       - name: Build
         working-directory: kernel
         run: |
@@ -55,7 +60,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             KCFLAGS="-Wno-error" 2>&1 | tail -n 300
           ls -lh out/arch/arm64/boot/
-
+ 
       - name: Upload kernel image and config
         uses: actions/upload-artifact@v4
         with:
@@ -64,3 +69,4 @@ jobs:
             kernel/out/arch/arm64/boot/Image*
             kernel/out/arch/arm64/boot/dts/**/*.dtb
             kernel/out/.config
+ 
