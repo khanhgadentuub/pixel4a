@@ -60,12 +60,13 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
             KCFLAGS=-Wno-error)
-          if ! make -j"$(nproc)" "${MAKEARGS[@]}" > build.log 2>&1; then
+          # Build only the kernel image (skip dtbo.img, which needs mkdtimg and is not needed here)
+          if ! make -j"$(nproc)" "${MAKEARGS[@]}" Image.lz4-dtb > build.log 2>&1; then
             echo "=============== LINES WITH ERRORS ==============="
             grep -n -E "error:|undefined|\*\*\*|No rule|not found" build.log | head -40
             ls -l tools/dtc out/scripts/dtc/dtc || true
             echo "=============== RERUN, ONE THREAD ==============="
-            make -j1 "${MAKEARGS[@]}" 2>&1 | tail -n 60
+            make -j1 "${MAKEARGS[@]}" Image.lz4-dtb 2>&1 | tail -n 60
             exit 1
           fi
           ls -lh out/arch/arm64/boot/
