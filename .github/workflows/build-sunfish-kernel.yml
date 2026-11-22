@@ -1,6 +1,6 @@
-# Put this file in a NEW GitHub repo at .github/workflows/build-sunfish-kernel.yml
-# Then: Actions tab -> "Build sunfish kernel" -> Run workflow.
-# UNTESTED. Toolchain URLs and defconfig name are from memory; fix whatever fails.
+# Replace the whole file at .github/workflows/build-sunfish-kernel.yml
+# v2: no Google toolchain download; uses Ubuntu's clang-14 + cross gcc.
+# UNTESTED. A 4.14 kernel on a newer clang may need more fixes.
 name: Build sunfish kernel
 
 on:
@@ -16,44 +16,44 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
-      - name: Install build dependencies
+      - name: Install toolchain and build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev python3 lz4 cpio git curl xz-utils
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev python3 lz4 cpio git curl xz-utils \
+            clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          clang-14 --version
 
       - name: Get kernel source
         run: |
           git clone --depth=1 -b "${{ inputs.branch }}" "${{ inputs.repo }}" kernel
+          echo "--- configs found:"
           ls kernel/arch/arm64/configs | grep -i -E "sunfish|floral" || true
-
-      - name: Get Google toolchains (names from memory, may need adjusting)
-        run: |
-          mkdir -p tc/clang tc/gcc64 tc/gcc32
-          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r416183b.tar.gz" | tar xz -C tc/clang
-          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android11-release.tar.gz" | tar xz -C tc/gcc64
-          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android11-release.tar.gz" | tar xz -C tc/gcc32
 
       - name: Configure (adds SYSVIPC and BINFMT_MISC)
         working-directory: kernel
         run: |
-          export PATH="$GITHUB_WORKSPACE/tc/clang/bin:$GITHUB_WORKSPACE/tc/gcc64/bin:$GITHUB_WORKSPACE/tc/gcc32/bin:$PATH"
+          set -o pipefail
           DEFCONFIG=$(ls arch/arm64/configs | grep -E '^sunfish.*defconfig$' | head -1)
           echo "Using $DEFCONFIG"
-          make O=out ARCH=arm64 "$DEFCONFIG"
+          make O=out ARCH=arm64 CC=clang-14 "$DEFCONFIG"
+          # Newer clang cannot do Google's CFI/LTO setup, so turn those off
+          scripts/config --file out/.config -d CFI_CLANG -d LTO_CLANG -d SHADOW_CALL_STACK || true
           scripts/config --file out/.config -e SYSVIPC -e SYSVIPC_SYSCTL -e BINFMT_MISC
-          make O=out ARCH=arm64 olddefconfig
+          make O=out ARCH=arm64 CC=clang-14 olddefconfig
           grep -E "CONFIG_SYSVIPC=|CONFIG_BINFMT_MISC=" out/.config
 
       - name: Build
         working-directory: kernel
         run: |
-          export PATH="$GITHUB_WORKSPACE/tc/clang/bin:$GITHUB_WORKSPACE/tc/gcc64/bin:$GITHUB_WORKSPACE/tc/gcc32/bin:$PATH"
-          make -j"$(nproc)" O=out ARCH=arm64 CC=clang LD=ld.lld \
+          set -o pipefail
+          make -j"$(nproc)" O=out ARCH=arm64 \
+            CC=clang-14 LD=ld.lld-14 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- 2>&1 | tail -n 200
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            KCFLAGS="-Wno-error" 2>&1 | tail -n 300
           ls -lh out/arch/arm64/boot/
 
       - name: Upload kernel image and config
