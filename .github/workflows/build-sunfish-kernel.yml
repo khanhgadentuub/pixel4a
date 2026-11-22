@@ -2,7 +2,7 @@
 # v2: no Google toolchain download; uses Ubuntu's clang-14 + cross gcc.
 # UNTESTED. A 4.14 kernel on a newer clang may need more fixes.
 name: Build sunfish kernel
- 
+
 on:
   workflow_dispatch:
     inputs:
@@ -12,7 +12,7 @@ on:
       branch:
         description: "Branch"
         default: "cnb"
- 
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -26,13 +26,13 @@ jobs:
           clang-14 --version
           # Let clang find lld as plain "ld.lld" (backup for the 32-bit link step)
           sudo ln -sf /usr/bin/ld.lld-14 /usr/local/bin/ld.lld
- 
+
       - name: Get kernel source
         run: |
           git clone --depth=1 -b "${{ inputs.branch }}" "${{ inputs.repo }}" kernel
           echo "--- configs found:"
           ls kernel/arch/arm64/configs | grep -i -E "sunfish|floral" || true
- 
+
       - name: Configure (adds SYSVIPC and BINFMT_MISC)
         working-directory: kernel
         run: |
@@ -48,19 +48,24 @@ jobs:
           make O=out ARCH=arm64 CC=clang-14 olddefconfig
           grep -E "CONFIG_SYSVIPC=|CONFIG_BINFMT_MISC=" out/.config
           grep -E "COMPAT_VDSO" out/.config || echo "COMPAT_VDSO not present"
- 
+
       - name: Build
         working-directory: kernel
         run: |
-          set -o pipefail
-          make -j"$(nproc)" O=out ARCH=arm64 \
-            CC=clang-14 LD=ld.lld-14 \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            KCFLAGS="-Wno-error" 2>&1 | tail -n 300
+          MAKEARGS=(O=out ARCH=arm64 CC=clang-14 LD=ld.lld-14
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            KCFLAGS=-Wno-error)
+          if ! make -j"$(nproc)" "${MAKEARGS[@]}" > build.log 2>&1; then
+            echo "=============== LINES WITH ERRORS ==============="
+            grep -n -E "error:|undefined|\*\*\*|No rule|not found" build.log | head -40
+            echo "=============== RERUN, ONE THREAD ==============="
+            make -j1 "${MAKEARGS[@]}" 2>&1 | tail -n 60
+            exit 1
+          fi
           ls -lh out/arch/arm64/boot/
- 
+
       - name: Upload kernel image and config
         uses: actions/upload-artifact@v4
         with:
@@ -69,4 +74,3 @@ jobs:
             kernel/out/arch/arm64/boot/Image*
             kernel/out/arch/arm64/boot/dts/**/*.dtb
             kernel/out/.config
- 
