@@ -1,0 +1,96 @@
+# Put at .github/workflows/build-holydragon-kernel.yml (or replace the old workflow's contents).
+# ALSO upload running.config (from your phone) to the ROOT of the same repo.
+# UNTESTED. Uses Ubuntu clang-14 on a kernel designed for Google clang 11, so CFI/LTO may fail.
+name: Build HolyDragon kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Kernel repo"
+        default: "https://gitlab.com/HolyAngel/sunfish"
+      branch:
+        description: "Branch"
+        default: "sunfish-11"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out this repo (for running.config)
+        uses: actions/checkout@v4
+
+      - name: Install toolchain and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev python3 lz4 cpio git curl xz-utils \
+            clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          clang-14 --version
+          sudo ln -sf /usr/bin/ld.lld-14 /usr/local/bin/ld.lld
+
+      - name: Get kernel source
+        run: |
+          git clone --depth=1 -b "${{ inputs.branch }}" "${{ inputs.repo }}" kernel
+          # Remove git data so the version string gets no "+" or hash suffix
+          rm -rf kernel/.git
+          grep -E "^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)" kernel/Makefile
+          ls kernel/arch/arm64/configs | grep -i -E "sunfish|floral" || true
+          ls -l running.config || echo "NOTE: no running.config in repo root, will use the defconfig"
+
+      - name: Configure (adds SYSVIPC and BINFMT_MISC)
+        working-directory: kernel
+        run: |
+          set -o pipefail
+          mkdir -p out
+          if [ -f "$GITHUB_WORKSPACE/running.config" ]; then
+            echo "Using running.config from the phone"
+            cp "$GITHUB_WORKSPACE/running.config" out/.config
+          else
+            DEFCONFIG=$(ls arch/arm64/configs | grep -E '^sunfish.*defconfig$' | head -1)
+            echo "Using $DEFCONFIG"
+            make O=out ARCH=arm64 CC=clang-14 "$DEFCONFIG"
+          fi
+          scripts/config --file out/.config -e SYSVIPC -e SYSVIPC_SYSCTL -e BINFMT_MISC
+          # 32-bit vDSO failed to link with this toolchain; harmless to drop
+          scripts/config --file out/.config -d COMPAT_VDSO || true
+          # keep the version string exactly as configured
+          scripts/config --file out/.config -d LOCALVERSION_AUTO || true
+          make O=out ARCH=arm64 CC=clang-14 olddefconfig
+          grep -E "CONFIG_LOCALVERSION=|CONFIG_SYSVIPC=|CONFIG_BINFMT_MISC=|CONFIG_MODVERSIONS|CONFIG_CFI_CLANG|CONFIG_LTO_CLANG" out/.config || true
+
+      - name: Build
+        working-directory: kernel
+        run: |
+          # This tree hardcodes DTC = $(srctree)/tools/dtc; point it at the dtc the kernel builds.
+          # (Do NOT set DTC_EXT: that stops the kernel from building its own dtc.)
+          ln -sfn "$PWD/out/scripts/dtc/dtc" tools/dtc
+          MAKEARGS=(O=out ARCH=arm64 CC=clang-14 LD=ld.lld-14
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            KCFLAGS=-Wno-error)
+          # Build only the kernel image (skip dtbo.img, which needs mkdtimg)
+          if ! make -j"$(nproc)" "${MAKEARGS[@]}" Image.lz4-dtb > build.log 2>&1; then
+            echo "=============== LINES WITH ERRORS ==============="
+            grep -n -E "error:|undefined|\*\*\*|No rule|not found" build.log | head -40
+            ls -l tools/dtc out/scripts/dtc/dtc || true
+            echo "=============== RERUN, ONE THREAD ==============="
+            make -j1 "${MAKEARGS[@]}" Image.lz4-dtb 2>&1 | tail -n 60
+            exit 1
+          fi
+          ls -lh out/arch/arm64/boot/
+          echo "=============== VERSION STRING OF THE BUILT KERNEL ==============="
+          strings out/arch/arm64/boot/Image | grep -m1 "Linux version" || true
+
+      - name: Copy config to a visible file name
+        run: cp kernel/out/.config kernel/out/kernel-config.txt
+
+      - name: Upload kernel image and config
+        uses: actions/upload-artifact@v4
+        with:
+          name: holydragon-kernel
+          path: |
+            kernel/out/arch/arm64/boot/Image*
+            kernel/out/arch/arm64/boot/dts/**/*.dtb
+            kernel/out/kernel-config.txt
